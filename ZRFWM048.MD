@@ -1,3 +1,8 @@
+### Sketch
+
+
+
+### SAP RFC Source Code
 ```abap
 *"----------------------------------------------------------------------
 *"*"Local Interface:
@@ -1238,4 +1243,145 @@ ENDIF.
 ENDLOOP.
 ENDIF.
 ENDFORM.
+```
+
+### Warehouse Workbench c# Code
+
+```c#
+
+ public void SyncSAPDailyData(DateTime deliveryDate, string plant, string driver, string soNumber)
+        {
+            try
+            {
+                var requireUrl = $"{AppSettingConfig.SapApiUrl}/api/ZRFWM048/GetDailySoDnData";
+                var obj048 = new BaseAPI().PostModelAndReturnModel<ZRFWM048, ZRFWM048>(requireUrl, "", new ZRFWM048()
+                {
+                    I_ZDATE = deliveryDate.Date,
+                    I_PLANT = plant,
+                    I_DRIVER = driver,
+                    I_SALES_ORDER = soNumber
+                });
+
+
+                //从数据库查询数据
+                using (var dbClient = db.GetInstance(DB.db_wm.GetAttributeValue()))
+                {
+                    var dbSoList = dbClient.Queryable<tb_270_it_dn_header>()
+                        .Where(x => x.LFDAT == deliveryDate)
+                        .WhereIF(!string.IsNullOrEmpty(plant), x => x.VSTEL == plant)
+                        .WhereIF(!string.IsNullOrEmpty(driver), x => x.SJZ1_NAM == driver)
+                        .WhereIF(!string.IsNullOrEmpty(soNumber), x => x.SO_NUM == soNumber)
+                        .ToList();
+
+
+                    var dbSoItemList = dbClient.Queryable<tb_271_it_dn_itemer>()
+                        .Where(x => x.FKDAT == deliveryDate)
+                        .WhereIF(!string.IsNullOrEmpty(plant), x => x.VSTEL == plant)
+                        .WhereIF(!string.IsNullOrEmpty(soNumber), x => x.SO_NUM == soNumber)
+                        .ToList();
+
+                    //由于数据库表SOItem没有司机字段，所以数据库查询出的SoItem会比较多，使用内连接后得到真实的数据库存在的SOItem
+                    var dbSoItemListAct = (from a in dbSoList
+                                           join b in dbSoItemList on a.SO_NUM equals b.SO_NUM
+                                           select b).ToList();
+
+
+
+                    //SAP 数据与DB数据左连接
+                    var joinSoOrderList = (from a in obj048.IT_DN_HEADER
+                                           join b in dbSoList on a.SO_NUM equals b.SO_NUM into bb
+                                           from c in bb.DefaultIfEmpty()
+                                           select new tb_270_it_dn_header
+                                           {
+                                               SO_TYPE = a.SO_TYPE,
+                                               SO_NUM = a.SO_NUM,
+                                               DN_TYPE = a.DN_TYPE,
+                                               VSBED = a.VSBED,
+                                               VSTEL = a.VSTEL,
+                                               LFDAT = a.LFDAT,
+                                               SHIPTO_NAM = a.SHIPTO_NAM,
+                                               SHIPTO_NUM = a.SHIPTO_NUM,
+                                               BTGEW = a.BTGEW,
+                                               NTGEW = a.NTGEW,
+                                               GEWEI = a.GEWEI,
+                                               SJZ1_NUM = a.SJZ1_NUM,
+                                               SJZ1_NAM = a.SJZ1_NAM,
+                                               SJZ3_NUM = a.SJZ3_NUM,
+                                               SJZ3_NAM = a.SJZ3_NAM,
+                                               SJZ4_NUM = a.SJZ4_NUM,
+                                               SJZ4_NAM = a.SJZ4_NAM,
+                                               ROUND = a.ROUND,
+                                               ToStatus = c?.ToStatus,
+                                               PgiStatus = c?.PgiStatus,
+                                               InvoiceStatus = c?.InvoiceStatus,
+                                               InvoiceNo = c?.InvoiceNo,
+                                               DN_NUM = a.DN_NUM,
+                                               UploadYamimealStatus = c?.UploadYamimealStatus,
+                                               ChangeYamimealOrderStatus = c?.ChangeYamimealOrderStatus
+
+                                           }).ToList();
+
+                    //SAP Item表串DB Item表 串 SAP Header表
+                    var joinSoOrderItemList = (from a in obj048.IT_DN_ITEMER
+                                               join b in dbSoItemListAct on new { a.SO_NUM, a.SO_ITEM } equals new { b.SO_NUM, b.SO_ITEM } into bb
+                                               from c in bb.DefaultIfEmpty()
+                                               join d in obj048.IT_DN_HEADER on a.SO_NUM equals d.SO_NUM into dd
+                                               from e in dd.DefaultIfEmpty()
+                                               select new tb_271_it_dn_itemer
+                                               {
+                                                   FKDAT = e.LFDAT,
+                                                   VSTEL = e.VSTEL,
+                                                   SO_NUM = a.SO_NUM,
+                                                   SO_ITEM = a.SO_ITEM,
+                                                   DN_NUM = a.DN_NUM,
+                                                   DN_ITEM = a.DN_ITEM,
+                                                   MTART = a.MTART,
+                                                   MATKL = a.MATKL,
+                                                   EXTWG = a.EXTWG,
+                                                   MATNR = a.MATNR,
+                                                   ARKTX = a.ARKTX,
+                                                   WHTXT = a.WHTXT,
+                                                   MEINS = a.MEINS,
+                                                   LFIMG = a.LFIMG,
+                                                   VRKME = a.VRKME,
+                                                   NTGEW = a.NTGEW,
+                                                   BRGEW = a.BRGEW,
+                                                   GEWEI = a.GEWEI,
+                                                   SETWEIGHT = a.SETWEIGHT,
+                                                   WHOUSE_TEXT1 = a.WHOUSE_TEXT1,
+                                                   QC_TYPE = a.QC_TYPE,
+                                                   QC_TEXT = a.QC_TEXT,
+                                                   UploadCatchWeightStatus = c?.UploadCatchWeightStatus
+                                               }).ToList();
+
+
+                    //通过差集得到新的数据
+                    var newSoOrder = joinSoOrderList.Except(dbSoList, x => MySqlSugar.JsonConverter.Serialize(x))
+                        .ToList();
+                    var newSoOrderItems = joinSoOrderItemList
+                        .Except(dbSoItemListAct, x => MySqlSugar.JsonConverter.Serialize(x)).ToList();
+                    //插入新数据
+                    dbClient.InsertDuplicateKey(newSoOrder);
+                    dbClient.InsertDuplicateKey(newSoOrderItems);
+
+                    //反向差集得到DB中冗作数据
+                    var outSoOrder = dbSoList.Except(joinSoOrderList, x => new { x.LFDAT, x.SO_NUM }).ToList();
+                    var outSoOrderItems = dbSoItemListAct
+                        .Except(joinSoOrderItemList, x => new { x.FKDAT, x.SO_NUM, x.SO_ITEM }).ToList();
+
+                    dbClient.Delete(outSoOrder);
+                    dbClient.Delete(outSoOrderItems);
+                }
+
+
+
+                //同步SAP Out貨Item
+                SyncSapOutSo(deliveryDate, plant);
+            }
+            catch (Exception ex)
+            {
+                throw ex;
+            }
+        }
+
 ```
