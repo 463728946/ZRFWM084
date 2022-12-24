@@ -1,6 +1,6 @@
-- [part1](#Sketch)
-- [part2](#SAP RFC)
-- [part3](#Warehouse Workbench)
+- [part1](#sketch)
+- [part2](#sap-rfc)
+- [part3](#warehouse-workbench)
 
 
 
